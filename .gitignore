@@ -1,0 +1,4 @@
+server
+logRPC_server
+__pycache__/
+*.pyc

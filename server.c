@@ -9,8 +9,11 @@
 #include <unistd.h>
 #include <pthread.h>
 
+#include "logRPC_client.h"
+
 #define MAX_USER_LENGTH 256
 #define MAX_MESSAGE_LENGTH 256
+#define MAX_FILE_LENGTH 256
 #define MAX_IP_LENGTH INET_ADDRSTRLEN
 #define MAX_PORT_LENGTH 16
 #define BACKLOG 128
@@ -25,6 +28,8 @@ typedef struct message {
   unsigned int id;
   char sender[MAX_USER_LENGTH];
   char text[MAX_MESSAGE_LENGTH];
+  char file_name[MAX_FILE_LENGTH];
+  int has_attachment;
   struct message *next;
 } message_t;
 
@@ -197,7 +202,8 @@ static unsigned int next_message_id(user_t *sender) {
 
 /* Inserta un mensaje al final de la cola de pendientes del destinatario. */
 static int append_message(user_t *receiver, const char *sender,
-                          unsigned int id, const char *text) {
+                          unsigned int id, const char *text,
+                          const char *file_name, int has_attachment) {
   message_t *message = calloc(1, sizeof(message_t));
 
   if (message == NULL) {
@@ -207,6 +213,10 @@ static int append_message(user_t *receiver, const char *sender,
   message->id = id;
   snprintf(message->sender, sizeof(message->sender), "%s", sender);
   snprintf(message->text, sizeof(message->text), "%s", text);
+  message->has_attachment = has_attachment;
+  if (file_name != NULL) {
+    snprintf(message->file_name, sizeof(message->file_name), "%s", file_name);
+  }
 
   if (receiver->pending_tail == NULL) {
     receiver->pending_head = message;
@@ -261,10 +271,19 @@ static int send_message_to_client(user_t *receiver, message_t *message) {
   }
 
   snprintf(id_str, sizeof(id_str), "%u", message->id);
-  if (send_string(sock, "SEND MESSAGE") < 0 ||
-      send_string(sock, message->sender) < 0 ||
-      send_string(sock, id_str) < 0 ||
-      send_string(sock, message->text) < 0) {
+  if (message->has_attachment) {
+    if (send_string(sock, "SEND MESSAGE ATTACH") < 0 ||
+        send_string(sock, message->sender) < 0 ||
+        send_string(sock, id_str) < 0 ||
+        send_string(sock, message->text) < 0 ||
+        send_string(sock, message->file_name) < 0) {
+      close(sock);
+      return -1;
+    }
+  } else if (send_string(sock, "SEND MESSAGE") < 0 ||
+             send_string(sock, message->sender) < 0 ||
+             send_string(sock, id_str) < 0 ||
+             send_string(sock, message->text) < 0) {
     close(sock);
     return -1;
   }
@@ -274,7 +293,7 @@ static int send_message_to_client(user_t *receiver, message_t *message) {
 }
 
 /* Notifica al remitente que un mensaje suyo se ha entregado correctamente. */
-static int send_ack_to_client(user_t *sender, unsigned int id) {
+static int send_ack_to_client(user_t *sender, message_t *message) {
   char id_str[32];
   int sock = connect_to_client(sender->ip, sender->port);
 
@@ -282,9 +301,16 @@ static int send_ack_to_client(user_t *sender, unsigned int id) {
     return -1;
   }
 
-  snprintf(id_str, sizeof(id_str), "%u", id);
-  if (send_string(sock, "SEND MESS ACK") < 0 ||
-      send_string(sock, id_str) < 0) {
+  snprintf(id_str, sizeof(id_str), "%u", message->id);
+  if (message->has_attachment) {
+    if (send_string(sock, "SEND MESS ATTACH ACK") < 0 ||
+        send_string(sock, id_str) < 0 ||
+        send_string(sock, message->file_name) < 0) {
+      close(sock);
+      return -1;
+    }
+  } else if (send_string(sock, "SEND MESS ACK") < 0 ||
+             send_string(sock, id_str) < 0) {
     close(sock);
     return -1;
   }
@@ -316,7 +342,7 @@ static void deliver_pending_messages(user_t *receiver) {
 
     user_t *sender = find_user(message->sender);
     if (sender != NULL && sender->connected) {
-      if (send_ack_to_client(sender, message->id) < 0) {
+      if (send_ack_to_client(sender, message) < 0) {
         mark_disconnected(sender);
       }
     }
@@ -334,6 +360,7 @@ static void handle_register(int client_sock) {
     send_byte(client_sock, result);
     return;
   }
+  log_remote_operation(user_name, "REGISTER", "");
 
   pthread_mutex_lock(&mutex_users);
   /* Si el nombre no existe, se crea el usuario desconectado y sin mensajes. */
@@ -371,6 +398,7 @@ static void handle_unregister(int client_sock) {
     send_byte(client_sock, result);
     return;
   }
+  log_remote_operation(user_name, "UNREGISTER", "");
 
   pthread_mutex_lock(&mutex_users);
   user_t *previous = NULL;
@@ -418,6 +446,7 @@ static void handle_connect(int client_sock, const char *client_ip) {
     send_byte(client_sock, result);
     return;
   }
+  log_remote_operation(user_name, "CONNECT", "");
 
   port = atoi(port_str);
 
@@ -469,6 +498,7 @@ static void handle_disconnect(int client_sock, const char *client_ip) {
     send_byte(client_sock, result);
     return;
   }
+  log_remote_operation(user_name, "DISCONNECT", "");
 
   pthread_mutex_lock(&mutex_users);
   user_t *user = find_user(user_name);
@@ -504,6 +534,7 @@ static void handle_users(int client_sock) {
     send_byte(client_sock, result);
     return;
   }
+  log_remote_operation(user_name, "USERS", "");
 
   pthread_mutex_lock(&mutex_users);
   user_t *requester = find_user(user_name);
@@ -547,7 +578,11 @@ static void handle_users(int client_sock) {
   /* Despues se envia una cadena por cada usuario conectado. */
   while (current != NULL) {
     if (current->connected) {
-      if (send_string(client_sock, current->name) < 0) {
+      char user_info[MAX_USER_LENGTH + MAX_IP_LENGTH + MAX_PORT_LENGTH + 8];
+
+      snprintf(user_info, sizeof(user_info), "%s::%s::%d", current->name,
+               current->ip, current->port);
+      if (send_string(client_sock, user_info) < 0) {
         pthread_mutex_unlock(&mutex_users);
         return;
       }
@@ -560,13 +595,16 @@ static void handle_users(int client_sock) {
   pthread_mutex_unlock(&mutex_users);
 }
 
-static void handle_send(int client_sock) {
+static void handle_send_common(int client_sock, int has_attachment) {
   char sender_name[MAX_USER_LENGTH];
   char receiver_name[MAX_USER_LENGTH];
   char text[MAX_MESSAGE_LENGTH];
+  char file_name[MAX_FILE_LENGTH];
   unsigned int id = 0;
   int receiver_connected = 0;
   unsigned char result = RC_ERROR;
+
+  file_name[0] = '\0';
 
   /* SEND recibe remitente, destinatario y texto del mensaje. */
   if (recv_string(client_sock, sender_name, sizeof(sender_name)) < 0 ||
@@ -575,6 +613,14 @@ static void handle_send(int client_sock) {
     send_byte(client_sock, result);
     return;
   }
+
+  if (has_attachment &&
+      recv_string(client_sock, file_name, sizeof(file_name)) < 0) {
+    send_byte(client_sock, result);
+    return;
+  }
+  log_remote_operation(sender_name, has_attachment ? "SENDATTACH" : "SEND",
+                       file_name);
 
   pthread_mutex_lock(&mutex_users);
   user_t *sender = find_user(sender_name);
@@ -585,7 +631,8 @@ static void handle_send(int client_sock) {
   } else {
     /* Siempre se almacena antes de responder al remitente. */
     id = next_message_id(sender);
-    if (append_message(receiver, sender_name, id, text) == 0) {
+    if (append_message(receiver, sender_name, id, text, file_name,
+                       has_attachment) == 0) {
       result = RC_OK;
       receiver_connected = receiver->connected;
     }
@@ -621,6 +668,14 @@ static void handle_send(int client_sock) {
   }
 }
 
+static void handle_send(int client_sock) {
+  handle_send_common(client_sock, 0);
+}
+
+static void handle_sendattach(int client_sock) {
+  handle_send_common(client_sock, 1);
+}
+
 static void *handle_request(void *arg) {
   request_info_t *request = (request_info_t *)arg;
   int client_sock = request->socket;
@@ -648,6 +703,8 @@ static void *handle_request(void *arg) {
     handle_users(client_sock);
   } else if (strcmp(operation, "SEND") == 0) {
     handle_send(client_sock);
+  } else if (strcmp(operation, "SENDATTACH") == 0) {
+    handle_sendattach(client_sock);
   } else {
     send_byte(client_sock, RC_ERROR);
   }
