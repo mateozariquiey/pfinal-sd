@@ -611,6 +611,7 @@ class client:
     @staticmethod
     def shell():
 
+        # Cada comando se asocia a una funcion que valida sus argumentos.
         commands = {
             "REGISTER": client._cmd_register,
             "UNREGISTER": client._cmd_unregister,
@@ -632,9 +633,11 @@ class client:
                     print("Error: command " + line[0] + " not valid.")
                     continue
 
+                # Se acepta el comando aunque se escriba en minusculas.
                 line[0] = line[0].upper()
 
                 if line[0] in commands:
+                    # La funcion del comando devuelve STOP cuando debe terminar la shell.
                     result = commands[line[0]](line)
                     if result == client.RC.STOP:
                         keep_alive = False
