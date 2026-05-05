@@ -595,6 +595,7 @@ class client:
     def _cmd_getFile(line):
         if len(line) != 4:
             print("Syntax error. Usage: GETFILE <userName> <fileName> <localFileName>")
+            return
         user = line[1]
         file = line[2]
         local_file = line[3]
@@ -603,7 +604,7 @@ class client:
     @staticmethod
     def _cmd_quit(line):
         if len(line) != 1:
-            print("Syntax error. Usage: QUIT")
+            print("Syntax error. Use: QUIT")
             return
         return client.quit()
 
@@ -622,31 +623,27 @@ class client:
             "QUIT": client._cmd_quit,
         }
 
-        keepAlive = True
-        while keepAlive:
+        keep_alive = True
+        while keep_alive:
             try:
                 command = input("c> ")
                 line = command.split(" ")
-                # validate empty  commands
-                if len(line) <= 0:
+                if len(line) == 0 or line[0] == "":
                     print("Error: command " + line[0] + " not valid.")
+                    continue
 
-                # simulate case-insensitivity in case user puts the command in lower case
                 line[0] = line[0].upper()
 
-                # Dispatcher
                 if line[0] in commands:
-                    # Handle command
                     result = commands[line[0]](line)
-                    # Stop if needed
                     if result == client.RC.STOP:
-                        keepAlive = False
-                else:  # show error for invalid commands
+                        keep_alive = False
+                else:
                     print("Error: command " + line[0] + " not valid.")
 
             except (EOFError, KeyboardInterrupt):
                 client.quit()
-                keepAlive = False
+                keep_alive = False
 
             except Exception as e:
                 print("Exception: " + str(e))
@@ -682,7 +679,7 @@ class client:
             return
 
         client.shell()
-        print("\n+++ FINISHED +++")
+        print("+++ FINISHED +++")
 
 
 if __name__ == "__main__":
