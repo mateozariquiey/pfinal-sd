@@ -15,6 +15,7 @@ class client:
         OK = 0
         ERROR = 1
         USER_ERROR = 2
+        STOP = 3
 
     # ****************** ATRIBUTOS *******************
     _server = None
@@ -90,11 +91,16 @@ class client:
     @staticmethod
     def _normalize_message(message):
         try:
-            conn = http.client.HTTPConnection(client._ws_host, client._ws_port,
-                                             timeout=2)
+            conn = http.client.HTTPConnection(
+                client._ws_host, client._ws_port, timeout=2
+            )
             body = message.encode("utf-8")
-            conn.request("POST", "/normalize", body=body,
-                         headers={"Content-Type": "text/plain; charset=utf-8"})
+            conn.request(
+                "POST",
+                "/normalize",
+                body=body,
+                headers={"Content-Type": "text/plain; charset=utf-8"},
+            )
             response = conn.getresponse()
             data = response.read()
             conn.close()
@@ -141,7 +147,10 @@ class client:
                 pass
             client._listen_socket = None
 
-        if client._listen_thread is not None and threading.current_thread() != client._listen_thread:
+        if (
+            client._listen_thread is not None
+            and threading.current_thread() != client._listen_thread
+        ):
             client._listen_thread.join(timeout=1)
         client._listen_thread = None
 
@@ -444,8 +453,11 @@ class client:
     @staticmethod
     def sendAttach(user, file, message):
         message = client._normalize_message(message)
-        if (client._user is None or not client._message_is_valid(message) or
-                not client._file_name_is_valid(file)):
+        if (
+            client._user is None
+            or not client._message_is_valid(message)
+            or not client._file_name_is_valid(file)
+        ):
             print("c> SENDATTACH FAIL")
             return client.RC.ERROR
 
@@ -516,81 +528,126 @@ class client:
         return client.RC.OK
 
     @staticmethod
+    def quit():
+        client._stop_listener()
+        client._user = None
+        return client.RC.STOP
+
+    @staticmethod
+    def _cmd_register(line):
+        if len(line) != 2:
+            print("Syntax error. Usage: REGISTER <userName>")
+            return
+        user = line[1]
+        return client.register(user)
+
+    @staticmethod
+    def _cmd_unregister(line):
+        if len(line) != 2:
+            print("Syntax error. Usage: UNREGISTER <userName>")
+            return
+        user = line[1]
+        return client.unregister(user)
+
+    @staticmethod
+    def _cmd_connect(line):
+        if len(line) != 2:
+            print("Syntax error. Usage: CONNECT <userName>")
+            return
+        user = line[1]
+        return client.connect(user)
+
+    @staticmethod
+    def _cmd_disconnect(line):
+        if len(line) != 2:
+            print("Syntax error. Usage: DISCONNECT <userName>")
+            return
+        user = line[1]
+        return client.disconnect(user)
+
+    @staticmethod
+    def _cmd_users(line):
+        if len(line) != 1:
+            print("Syntax error. Usage: USERS")
+            return
+        return client.users()
+
+    @staticmethod
+    def _cmd_send(line):
+        if len(line) < 3:
+            print("Syntax error. Usage: SEND <userName> <message>")
+            return
+        user = line[1]
+        message = " ".join(line[2:])
+        return client.send(user, message)
+
+    @staticmethod
+    def _cmd_sendAttach(line):
+        if len(line) < 4:
+            print("Syntax error. Usage: SENDATTACH <userName> <fileName> <message>")
+            return
+        user = line[1]
+        file = line[2]
+        message = " ".join(line[3:])
+        return client.sendAttach(user, file, message)
+
+    @staticmethod
+    def _cmd_getFile(line):
+        if len(line) != 4:
+            print("Syntax error. Usage: GETFILE <userName> <fileName> <localFileName>")
+        user = line[1]
+        file = line[2]
+        local_file = line[3]
+        return client.getFile(user, file, local_file)
+
+    @staticmethod
+    def _cmd_quit(line):
+        if len(line) != 1:
+            print("Syntax error. Usage: QUIT")
+            return
+        return client.quit()
+
+    @staticmethod
     def shell():
 
-        while True:
+        commands = {
+            "REGISTER": client._cmd_register,
+            "UNREGISTER": client._cmd_unregister,
+            "CONNECT": client._cmd_connect,
+            "DISCONNECT": client._cmd_disconnect,
+            "USERS": client._cmd_users,
+            "SEND": client._cmd_send,
+            "SENDATTACH": client._cmd_sendAttach,
+            "GETFILE": client._cmd_getFile,
+            "QUIT": client._cmd_quit,
+        }
+
+        keepAlive = True
+        while keepAlive:
             try:
                 command = input("c> ")
                 line = command.split(" ")
-                if len(line) > 0:
+                # validate empty  commands
+                if len(line) <= 0:
+                    print("Error: command " + line[0] + " not valid.")
 
-                    line[0] = line[0].upper()
+                # simulate case-insensitivity in case user puts the command in lower case
+                line[0] = line[0].upper()
 
-                    if line[0] == "REGISTER":
-                        if len(line) == 2:
-                            client.register(line[1])
-                        else:
-                            print("Syntax error. Usage: REGISTER <userName>")
+                # Dispatcher
+                if line[0] in commands:
+                    # Handle command
+                    result = commands[line[0]](line)
+                    # Stop if needed
+                    if result == client.RC.STOP:
+                        keepAlive = False
+                else:  # show error for invalid commands
+                    print("Error: command " + line[0] + " not valid.")
 
-                    elif line[0] == "UNREGISTER":
-                        if len(line) == 2:
-                            client.unregister(line[1])
-                        else:
-                            print("Syntax error. Usage: UNREGISTER <userName>")
+            except (EOFError, KeyboardInterrupt):
+                client.quit()
+                keepAlive = False
 
-                    elif line[0] == "CONNECT":
-                        if len(line) == 2:
-                            client.connect(line[1])
-                        else:
-                            print("Syntax error. Usage: CONNECT <userName>")
-
-                    elif line[0] == "DISCONNECT":
-                        if len(line) == 2:
-                            client.disconnect(line[1])
-                        else:
-                            print("Syntax error. Usage: DISCONNECT <userName>")
-
-                    elif line[0] == "USERS":
-                        if len(line) == 1:
-                            client.users()
-                        else:
-                            print("Syntax error. Usage: USERS")
-
-                    elif line[0] == "SEND":
-                        if len(line) >= 3:
-                            message = " ".join(line[2:])
-                            client.send(line[1], message)
-                        else:
-                            print("Syntax error. Usage: SEND <userName> <message>")
-
-                    elif line[0] == "SENDATTACH":
-                        if len(line) >= 4:
-                            message = " ".join(line[3:])
-                            client.sendAttach(line[1], line[2], message)
-                        else:
-                            print("Syntax error. Usage: SENDATTACH <userName> <filename> <message>")
-
-                    elif line[0] == "GETFILE":
-                        if len(line) == 4:
-                            client.getFile(line[1], line[2], line[3])
-                        else:
-                            print("Syntax error. Usage: GETFILE <userName> <fileName> <localFileName>")
-
-                    elif line[0] == "QUIT":
-                        if len(line) == 1:
-                            if client._user is not None:
-                                client._stop_listener()
-                                client._user = None
-                            break
-                        else:
-                            print("Syntax error. Use: QUIT")
-                    else:
-                        print("Error: command " + line[0] + " not valid.")
-            except EOFError:
-                if client._user is not None:
-                    client._stop_listener()
-                    client._user = None
-                break
             except Exception as e:
                 print("Exception: " + str(e))
 
@@ -625,7 +682,7 @@ class client:
             return
 
         client.shell()
-        print("+++ FINISHED +++")
+        print("\n+++ FINISHED +++")
 
 
 if __name__ == "__main__":
